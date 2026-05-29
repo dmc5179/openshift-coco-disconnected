@@ -1,0 +1,10 @@
+---
+kind: NodeFeatureDiscovery
+apiVersion: nfd.openshift.io/v1
+metadata:
+  name: nfd-instance
+  namespace: openshift-nfd
+spec:
+  operand:
+    imagePullPolicy: IfNotPresent
+    servicePort: 12000

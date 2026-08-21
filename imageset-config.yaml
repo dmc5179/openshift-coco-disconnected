@@ -1,24 +1,85 @@
-kind: ImageSetConfiguration
 apiVersion: mirror.openshift.io/v2alpha1
+kind: ImageSetConfiguration
 mirror:
+  # OCP release — pin to a single patch version; update both min/max to change
+  platform:
+    channels:
+      - name: stable-4.21
+        minVersion: "4.21.15"
+        maxVersion: "4.21.15"
+        shortestPath: true
+    graph: true
+
   operators:
-  - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.21
-    packages:
-    - name: cincinnati-operator
-      channels:
-      - name: v1
-    - name: rhbk-operator
-      channels:
-      - name: stable-v26
-#  - catalog: registry.redhat.io/redhat/community-operator-index:v4.21
-#    packages:
-#    - name: patterns-operator # Not sure that we want to use ansible over Argo??
-#      channels:
-#      - name: fast
+    # =========================================================================
+    # Red Hat operators (redhat-operators catalog)
+    # =========================================================================
+    - catalog: registry.redhat.io/redhat/redhat-operator-index:v4.21
+      packages:
+        # --- CoCo core ---
+        - name: sandboxed-containers-operator
+          channels:
+            - name: stable
+        - name: trustee-operator
+          channels:
+            - name: stable
+
+        # --- Hardware discovery ---
+        - name: nfd
+          channels:
+            - name: stable
+
+        # --- Storage ---
+        - name: local-storage-operator
+          channels:
+            - name: stable
+
+    # =========================================================================
+    # Certified operators (certified-operators catalog)
+    # =========================================================================
+    - catalog: registry.redhat.io/redhat/certified-operator-index:v4.21
+      packages:
+        # Intel device plugins for SGX/TDX device access
+        # Requires registries.d sigstore skip config for registry.connect.redhat.com/intel
+        - name: intel-device-plugins-operator
+          channels:
+            - name: stable
+        # Intel TDX DCAP operator — manages QGS (Quote Generation Service) lifecycle
+        - name: intel-tdx-dcap-operator
+          channels:
+            - name: alpha
+
+  # ===========================================================================
+  # Additional container images
+  # ===========================================================================
   additionalImages:
-  - name: registry.redhat.io/openshift-sandboxed-containers/osc-dm-verity-image:1.12.0
-  - name: quay.io/danclark/pcr-collector:latest
-  - name: quay.io/validatedpatterns/utility-container:latest
-  - name: quay.io/openshift_sandboxed_containers/coco-tools:1.12
-  - name: ghcr.io/butler54/imperative-container:latest
+    # --- Sandboxed Containers ---
+    # dm-verity image used by sandboxed containers for image verification
+    - name: registry.redhat.io/openshift-sandboxed-containers/osc-dm-verity-image:1.12.0
+
+    # --- Intel DCAP ---
+    # QGS (Quote Generation Service) image used by the Intel TDX DCAP operator
+    - name: registry.redhat.io/openshift-sandboxed-containers/osc-tdx-qgs@sha256:308d66da94d3116cc16530a4a2cd60a995458f331e1cb3487c6ea3fdae60545b
+    # Intel SGX device plugin image (certified catalog, needs sigstore skip)
+    - name: registry.connect.redhat.com/intel/intel-sgx-plugin@sha256:4ac8769c4f0a82b3ea04cf1532f15e9935c71fe390ff5a9dc3ee57f970a65f0b
+
+    # --- PCR collector ---
+    # Custom image for collecting TPM PCR values from kata-cc guests
+    - name: quay.io/danclark/pcr-collector:latest
+
+    # --- NFD operand ---
+    # Worker/master/gc DaemonSets use this tag, not the operator bundle digest
+    - name: registry.redhat.io/openshift4/ose-node-feature-discovery-rhel9:v4.21
+
+    # --- CoCo tools ---
+    - name: quay.io/openshift_sandboxed_containers/coco-tools:1.12
+
+    # --- Cosign / Sigstore trust anchors ---
+    # rekor public key and Red Hat cosign key are fetched as files (not images)
+    # but the dm-verity image above is what the sandboxed containers operator
+    # uses for container image signature verification inside the TEE
+
+    # --- Base images for workloads ---
+    - name: registry.access.redhat.com/ubi9/ubi:latest
+
   helm: {}

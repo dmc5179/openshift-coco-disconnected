@@ -97,6 +97,18 @@ On the internet-connected side, use the PCS Client Tool container to merge platf
 
 ### Merge CSV files
 
+**Automated (recommended):**
+
+```bash
+mkdir -p ./platform-data
+cp /media/sneakernet/host_*.csv ./platform-data/
+
+cd intel-tdx-remote-attestation-disconnected
+./scripts/fetch-platform-collateral.sh collect ./platform-data/
+```
+
+**Manual:**
+
 ```bash
 mkdir -p ./platform-data ./output
 cp /media/sneakernet/host_*.csv ./platform-data/
@@ -104,18 +116,33 @@ cp /media/sneakernet/host_*.csv ./platform-data/
 podman run --rm \
   -v ./platform-data:/data:Z \
   -v ./output:/output:Z \
-  -w /home/default/confidential-computing.tee.dcap/tools/PcsClientTool \
-  localhost/pcs-client-tool:latest \
+  -w /opt/app-root/src/confidential-computing.tee.dcap/tools/PcsClientTool \
+  quay.io/danclark/intel-tdx/pcs-client-tool:latest \
   python3 pcsclient.py collect -d /data -o /output/platform_list.json
 ```
 
 ### Fetch collateral
 
+**Automated (recommended):**
+
+```bash
+cd intel-tdx-remote-attestation-disconnected
+
+# Merge CSVs and fetch in two steps
+./scripts/fetch-platform-collateral.sh collect ./platform-data/
+./scripts/fetch-platform-collateral.sh fetch --api-key YOUR_INTEL_PCS_API_KEY
+```
+
+The script pipes the API key via stdin to the PCS Client Tool container
+(the tool uses `getpass`, not environment variables).
+
+**Manual:**
+
 ```bash
 podman run --rm -it \
   -v ./output:/output:Z \
-  -w /home/default/confidential-computing.tee.dcap/tools/PcsClientTool \
-  localhost/pcs-client-tool:latest \
+  -w /opt/app-root/src/confidential-computing.tee.dcap/tools/PcsClientTool \
+  quay.io/danclark/intel-tdx/pcs-client-tool:latest \
   python3 pcsclient.py fetch \
     -i /output/platform_list.json \
     -o /output/platform_collaterals.json

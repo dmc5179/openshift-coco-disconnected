@@ -1,166 +1,365 @@
 # OpenShift Confidential Containers — Disconnected Bare Metal
 
-Deploy OpenShift Confidential Containers (CoCo) on bare-metal servers in a fully disconnected (air-gapped) enclave environment using Intel TDX.
+Deploy OpenShift Confidential Containers (CoCo) on bare-metal Intel TDX servers
+in a fully disconnected (air-gapped) environment. All operators deploy via
+AutoShift (ACM governance policies through GitOps). FIPS is enabled.
 
-## Overview
+## Getting Started
 
-This repository orchestrates everything needed to run confidential container workloads on OpenShift bare metal without internet connectivity:
+Follow the phases below in order. Each phase links to detailed documentation.
 
-1. **Mirror** all required operators, images, and artifacts into the disconnected enclave
-2. **Deploy operators** via [AutoShift](autoshiftv2-coco/) (GitOps-driven ACM policies)
-3. **Set up Intel TDX attestation infrastructure** on the internet-connected side
-4. **Configure** the OpenShift cluster for confidential containers with hardware-based attestation
+| Phase | What | Where | Side |
+|-------|------|-------|------|
+| **0** | [Set up infrastructure hosts](#phase-0-infrastructure-hosts) | This page | Both |
+| **1** | [Configure server BIOS for TDX](#phase-1-configure-bios-for-tdx) | This page + [`redfish-configure-tdx-bios/`](redfish-configure-tdx-bios/) | Disconnected |
+| **2** | [Collect platform data from TDX hosts](#phase-2-collect-platform-data) | [`docs/intel-infrastructure.md`](docs/intel-infrastructure.md) | Disconnected |
+| **3** | [Mirror images into the enclave](#phase-3-mirror-images) | [`docs/mirroring.md`](docs/mirroring.md) | Connected → Disconnected |
+| **4** | [Fetch Intel attestation collateral](#phase-4-fetch-attestation-collateral) | [`docs/intel-infrastructure.md`](docs/intel-infrastructure.md) | Connected |
+| **5** | [Deploy PCCS](#phase-5-deploy-pccs) | [`docs/deployment-guide.md` Phase 5](docs/deployment-guide.md#phase-5-deploy-pccs-in-the-disconnected-enclave) | Both |
+| **6** | [Deploy CoCo operators via AutoShift](#phase-6-deploy-coco-via-autoshift) | [`AutoShift-CoCo-QuickStart.md`](AutoShift-CoCo-QuickStart.md) | Disconnected |
+| **7** | [Post-deployment configuration](#phase-7-post-deployment) | [`docs/trustee-operations.md`](docs/trustee-operations.md) | Disconnected |
+| **8** | [Validate the deployment](#phase-8-validate) | [`docs/test-plan.md`](docs/test-plan.md) | Disconnected |
 
-Confidential containers run inside Intel TDX Trusted Execution Environments (TEEs) with memory encryption, verified through remote attestation using the Red Hat build of Trustee (KBS).
+For the full end-to-end walkthrough with every command, see
+[`docs/deployment-guide.md`](docs/deployment-guide.md).
 
-## Prerequisites
-
-- OpenShift Container Platform **4.21.9 or later** installed on bare-metal servers with Intel TDX-capable hardware
-- FIPS mode enabled on the target cluster (see [FIPS Notes](#fips-notes))
-- A mirror registry accessible within the disconnected enclave
-- An internet-connected host for fetching Intel attestation collateral and mirroring images
-- Intel PCS API subscription key (free) from [api.portal.trustedservices.intel.com](https://api.portal.trustedservices.intel.com/manage-subscriptions)
+---
 
 ## Architecture
 
 ```
-  INTERNET-CONNECTED SIDE                    DISCONNECTED ENCLAVE
- ========================                   ======================
+  INTERNET-CONNECTED SIDE                    AIR GAP       DISCONNECTED ENCLAVE
+ ========================                   =========     ======================
 
- oc-mirror                                  OpenShift Cluster (bare metal)
-   registry.redhat.io ──► mirror registry ──► ├── NFD Operator
-   certified catalog                         ├── Sandboxed Containers Operator
-   additional images                         ├── Trustee Operator (KBS)
-                                             ├── Intel TDX DCAP Operator
- Intel PCS API                               ├── Intel Device Plugins
-   collateral fetch ──► sneakernet ──►       └── KataConfig (kata-cc runtime)
-   PCK certificates
-                                             Intel PCCS (if on separate host)
- PCS Client Tool                               └── Serves cached collateral
-   merge platform CSVs                            to TDX hosts
-   fetch collateral
+ RHEL 9 Server (connected)                               OpenShift 4.21+ Cluster
+ ├── oc-mirror v2                                         ├── NFD Operator
+ │   registry.redhat.io ────────────────► mirror ──────► ├── Intel Device Plugins
+ │   certified catalog                    registry        ├── Intel TDX DCAP (QGS)
+ │   additional images                                    ├── Sandboxed Containers
+ │                                                        ├── Trustee (KBS)
+ ├── PCS Client Tool                                      └── kata-cc workloads
+ │   merge platform CSVs ◄── sneakernet ◄── host_*.csv
+ │   fetch collateral ──────► sneakernet ──────►         RHEL 9 Server (disconnected)
+ │                                                        ├── Mirror registry
+ └── PCCS (optional, for testing)                         ├── PCCS (collateral cache)
+                                                          └── Platform collateral
 ```
+
+---
+
+## Phase 0: Infrastructure Hosts
+
+You need two RHEL 9 servers and an OpenShift cluster:
+
+| Host | Network | Purpose |
+|------|---------|---------|
+| **Connected RHEL 9** | Internet access | Mirror images, fetch Intel collateral, build container images |
+| **Disconnected RHEL 9** | Enclave only | Run mirror registry, PCCS, serve as a jump host |
+| **OpenShift cluster** | Enclave only | Bare-metal 4.21.9+, FIPS enabled, Intel TDX-capable CPUs |
+
+### Connected RHEL 9 setup
+
+```bash
+# Install prerequisites
+sudo dnf install -y podman skopeo jq openssl python3
+
+# Install oc-mirror v2 (must match OCP version)
+# Download from: https://console.redhat.com/openshift/downloads
+tar xf oc-mirror.tar.gz -C /usr/local/bin/
+
+# Install oc CLI
+tar xf openshift-client-linux.tar.gz -C /usr/local/bin/
+
+# Clone this repo
+git clone https://github.com/dmc5179/openshift-coco-disconnected.git
+cd openshift-coco-disconnected
+git submodule update --init
+
+# Build Intel attestation container images
+cd intel-tdx-remote-attestation-disconnected
+./build.sh
+```
+
+### Disconnected RHEL 9 setup
+
+```bash
+# Install prerequisites
+sudo dnf install -y podman skopeo jq openssl
+
+# Set up the mirror registry (see docs/mirroring.md for full details)
+# Transfer oc-mirror workspace from connected side via sneakernet
+
+# Load PCCS and Admin Tool container images (transferred from connected side)
+podman load -i pccs.tar
+podman load -i pccs-admin-tool.tar
+```
+
+### What gets transferred across the air gap
+
+| Artifact | Direction | Size | Purpose |
+|----------|-----------|------|---------|
+| oc-mirror workspace | Connected → Disconnected | ~50-80 GB | All container images and operator catalogs |
+| `host_*.csv` files | Disconnected → Connected | ~1 KB each | Platform manifests from TDX hosts |
+| `platform_collaterals.json` | Connected → Disconnected | ~500 KB | PCK certs and quote verification data |
+| PCCS container images | Connected → Disconnected | ~500 MB | `pccs.tar`, `pccs-admin-tool.tar` |
+| `rekor.pub`, `cosign-pub-key.pem` | Connected → Disconnected | ~1 KB each | Sigstore verification keys |
+
+---
+
+## Phase 1: Configure BIOS for TDX
+
+TDX must be enabled in server BIOS before OpenShift can use it.
+
+**Required BIOS settings:**
+
+| Setting | Value |
+|---------|-------|
+| Intel TDX | Enabled |
+| Intel SGX | Enabled |
+| Total Memory Encryption (TME) | Enabled |
+| SGX Factory Reset | On → reboot → Off → reboot |
+| SGX Auto MP Registration | Enabled |
+
+**Automated (Dell PowerEdge):** Use the Redfish scripts in
+[`redfish-configure-tdx-bios/`](redfish-configure-tdx-bios/).
+
+**Manual:** See [`docs/deployment-guide.md` Phase 1](docs/deployment-guide.md#phase-1-configure-server-bios-for-tdx).
+
+After BIOS configuration, verify from the OS:
+```bash
+dmesg | grep -i tdx        # TDX module loaded
+ls /dev/sgx_*               # SGX devices present
+```
+
+---
+
+## Phase 2: Collect Platform Data
+
+On each TDX bare-metal host, extract the Platform Manifest:
+
+```bash
+sudo dnf install -y sgx-pck-id-retrieval-tool
+sudo PCKIDRetrievalTool -f host_$(hostname -s).csv
+```
+
+Transfer all `host_*.csv` files to the connected RHEL server via sneakernet.
+
+See [`docs/intel-infrastructure.md`](docs/intel-infrastructure.md) Step 2 for
+details and CoreOS considerations.
+
+---
+
+## Phase 3: Mirror Images
+
+Mirror all required images into the disconnected enclave's registry.
+
+**What gets mirrored:**
+
+| Category | Contents |
+|----------|----------|
+| OCP Platform | OpenShift 4.21.x release images |
+| Red Hat Operators | NFD, Sandboxed Containers, Trustee, Local Storage, LVM Storage |
+| Certified Operators | Intel Device Plugins, Intel TDX DCAP |
+| Additional Images | dm-verity, NFD operand, Intel QGS, CoCo tools |
+
+```bash
+# On the connected RHEL server
+oc-mirror --config imageset-config.yaml \
+  docker://<mirror-registry>:<port> \
+  --workspace file://$HOME/oc-mirror-workspace --v2
+```
+
+Transfer the workspace to the disconnected side and apply cluster resources.
+
+Full guide: [`docs/mirroring.md`](docs/mirroring.md)
+
+---
+
+## Phase 4: Fetch Attestation Collateral
+
+On the connected RHEL server, fetch attestation collateral from Intel PCS:
+
+```bash
+cd intel-tdx-remote-attestation-disconnected
+
+# Merge CSV files from all TDX hosts
+./scripts/fetch-platform-collateral.sh collect /path/to/csv-dir/
+
+# Fetch collateral from Intel PCS (requires API key)
+./scripts/fetch-platform-collateral.sh fetch --api-key YOUR_INTEL_PCS_API_KEY
+```
+
+Transfer `collateral-output/platform_collaterals.json` to the disconnected side.
+
+Get a free API key at:
+[api.portal.trustedservices.intel.com](https://api.portal.trustedservices.intel.com/manage-subscriptions)
+
+Full guide: [`docs/intel-infrastructure.md`](docs/intel-infrastructure.md)
+
+---
+
+## Phase 5: Deploy PCCS
+
+Deploy PCCS in the disconnected enclave to serve attestation collateral.
+
+### Option A: Podman on the disconnected RHEL server
+
+```bash
+# Start PCCS
+podman run -d --name pccs --network host \
+  -v pccs-data:/opt/intel/sgx-dcap-pccs/data:Z \
+  -v ./pccs-ssl-key:/opt/intel/sgx-dcap-pccs/ssl_key:Z \
+  quay.io/danclark/intel-tdx/pccs:latest
+
+# Insert collateral (default admin token: my-admin-token)
+./scripts/fetch-platform-collateral.sh insert https://localhost:8081 \
+  --admin-token my-admin-token
+```
+
+### Option B: Helm chart on OpenShift
+
+```bash
+helm install pccs intel-tdx-remote-attestation-disconnected/chart/pccs/ \
+  --namespace intel-pccs --create-namespace
+# Default tokens are baked into values.yaml:
+#   admin = my-admin-token, user = my-user-token
+```
+
+Full guide: [`docs/deployment-guide.md` Phase 5](docs/deployment-guide.md#phase-5-deploy-pccs-in-the-disconnected-enclave)
+
+---
+
+## Phase 6: Deploy CoCo via AutoShift
+
+AutoShift deploys all CoCo operators via ACM governance policies and GitOps.
+
+**Operators deployed (in dependency order):**
+
+| Order | Operator | Purpose |
+|-------|----------|---------|
+| 1 | Node Feature Discovery | Detects TDX/SNP/SGX hardware |
+| 2 | Intel Device Plugins | Provides SGX device resources |
+| 3 | Intel TDX DCAP | QGS + vsock proxy for quote generation |
+| 4 | Sandboxed Containers | kata-cc runtime + KataConfig + MachineConfig |
+| 5 | Trustee | KBS for attestation and secret delivery |
+
+Full step-by-step: [`AutoShift-CoCo-QuickStart.md`](AutoShift-CoCo-QuickStart.md)
+
+---
+
+## Phase 7: Post-Deployment
+
+After operators are deployed, complete these manual steps:
+
+1. **Generate attestation key pair** (EC P-256, not RSA)
+2. **Generate RVPS reference values** from kata guest images
+3. **Store secrets in KBS** for workload delivery
+4. **Configure KBS QCNL** to reach PCCS for quote verification
+
+Full guide: [`docs/trustee-operations.md`](docs/trustee-operations.md)
+
+Scripts:
+- `scripts/generate-rvps-reference-values.sh` — compute TDX measurements
+- `scripts/kbs-secrets.sh` — manage KBS repository secrets
+- `scripts/generate-initdata.sh` — generate `cc_init_data` annotation
+
+---
+
+## Phase 8: Validate
+
+### Quick smoke test
+
+```bash
+# Verify kata-cc runtime is available
+oc get runtimeclass kata-cc
+
+# Deploy a test pod (requires 4Gi memory minimum)
+oc apply -f testbed/workloads/coco-attestation-test.yaml
+
+# Check attestation logs
+oc logs -n trustee-operator-system -l app=kbs -c kbs --tail=20
+```
+
+### Full attestation test with sealed secrets
+
+```bash
+# Store a test secret in KBS
+./scripts/kbs-secrets.sh set attestation-test test-value 'my-secret'
+./scripts/kbs-secrets.sh register attestation-test test-value
+
+# Generate initdata and deploy test pod
+INITDATA=$(./scripts/generate-initdata.sh debug)
+sed "s|REPLACE_WITH_INITDATA|$INITDATA|" \
+  testbed/workloads/coco-attestation-test.yaml | oc apply -f -
+
+# Check results
+oc logs coco-attestation-test -c fetch-secret
+oc logs coco-attestation-test -c result
+```
+
+Full test plan: [`docs/test-plan.md`](docs/test-plan.md)
+
+---
+
+## Pre-Flight Checks
+
+Run before deployment to verify prerequisites:
+
+```bash
+# Check cluster readiness
+./scripts/preflight-cluster.sh
+
+# Check RHEL 9 host readiness
+./scripts/preflight-rhel9.sh
+```
+
+---
 
 ## Repository Layout
 
 | Path | Description |
 |------|-------------|
-| [`imageset-config.yaml`](imageset-config.yaml) | oc-mirror ImageSetConfiguration — all operators and images for disconnected mirroring |
-| [`docs/`](docs/) | Detailed guides (mirroring, Intel infrastructure setup) |
-| [`autoshiftv2-coco/`](autoshiftv2-coco/) | AutoShift fork — ACM policies to deploy all operators via GitOps |
-| [`intel-tdx-remote-attestation-disconnected/`](intel-tdx-remote-attestation-disconnected/) | Containerized Intel TDX remote attestation tooling for disconnected environments |
-| [`coco-pattern/`](coco-pattern/) | Reference repo (validated patterns model — used for context, not our deployment model) |
-| [`trustee/`](trustee/) | Manual Trustee operator YAML (reference — AutoShift handles deployment) |
-| [`sandboxed_containers/`](sandboxed_containers/) | Manual Intel DCAP and device plugin YAML (reference) |
-| [`nfd-nodefeaturerule-combined.yaml`](nfd-nodefeaturerule-combined.yaml) | NodeFeatureRule for TDX/SNP/SGX hardware detection |
-| [`machine-config-intel-tdx.yaml`](machine-config-intel-tdx.yaml) | MachineConfig for Intel TDX kernel arguments |
-| [`kataconfig-cr.yaml`](kataconfig-cr.yaml) | KataConfig CR for confidential containers |
-| [`osc-feature-gates.yaml`](osc-feature-gates.yaml) | Feature gates ConfigMap to enable confidential mode |
+| [`docs/deployment-guide.md`](docs/deployment-guide.md) | Complete end-to-end deployment guide |
+| [`docs/mirroring.md`](docs/mirroring.md) | Disconnected image mirroring guide |
+| [`docs/intel-infrastructure.md`](docs/intel-infrastructure.md) | Intel TDX attestation infrastructure setup |
+| [`docs/trustee-operations.md`](docs/trustee-operations.md) | KBS secrets, RVPS, attestation keys |
+| [`docs/test-plan.md`](docs/test-plan.md) | End-to-end validation checklist |
+| [`docs/rfe-trustee-rvps-local-json.md`](docs/rfe-trustee-rvps-local-json.md) | RFE: RVPS local_json operator bug |
+| [`docs/rfe-trustee-kbs-dirpath-migration.md`](docs/rfe-trustee-kbs-dirpath-migration.md) | RFE: KBS dir_path migration bug |
+| [`AutoShift-CoCo-QuickStart.md`](AutoShift-CoCo-QuickStart.md) | AutoShift deployment quick start |
+| [`imageset-config.yaml`](imageset-config.yaml) | oc-mirror v2 config (all operators + images) |
+| [`autoshiftv2-coco/`](autoshiftv2-coco/) | AutoShift fork with CoCo policies |
+| [`intel-tdx-remote-attestation-disconnected/`](intel-tdx-remote-attestation-disconnected/) | Intel PCCS, PCS Client Tool, Admin Tool |
+| [`redfish-configure-tdx-bios/`](redfish-configure-tdx-bios/) | Dell PowerEdge BIOS automation |
+| [`scripts/`](scripts/) | Operational scripts (preflight, RVPS, KBS secrets, initdata) |
+| [`testbed/`](testbed/) | Test workloads and cluster config |
 
-## Operators Required
+## Sub-Repositories
 
-All operators are deployed via AutoShift (ACM governance policies). Enable them with a single `coco: 'true'` label in the AutoShift clusterset values.
+Three directories are separate git repos with their own branches and remotes:
 
-| Operator | Catalog | Purpose |
-|----------|---------|---------|
-| Node Feature Discovery (nfd) | redhat-operators | Detects Intel TDX / AMD SEV-SNP hardware capabilities |
-| OpenShift Sandboxed Containers | redhat-operators | Provides kata-cc runtime class for confidential VMs |
-| Red Hat build of Trustee | redhat-operators | Key Broker Service (KBS) for remote attestation and secret delivery |
-| Intel Device Plugins | certified-operators | Exposes SGX/TDX device nodes to pods |
-| Intel TDX DCAP | certified-operators | Manages QGS (Quote Generation Service) for TDX attestation |
-| Local Storage Operator | redhat-operators | Storage provisioning (optional, for SNO deployments) |
+| Directory | Role | Our changes? |
+|-----------|------|-------------|
+| `autoshiftv2-coco/` | ACM policies for operator deployment | Yes — `coco-disconnected` branch |
+| `intel-tdx-remote-attestation-disconnected/` | Containerized PCCS and tools | Yes — `main` branch |
+| `coco-pattern/` | Upstream validated patterns (reference only) | No — read-only |
 
-## Quick Start
+---
 
-### 1. Mirror images into the enclave
+## Key Operational Notes
 
-See [`docs/mirroring.md`](docs/mirroring.md) for the full process.
-
-```bash
-oc-mirror --config imageset-config.yaml \
-  docker://<mirror-registry-host>:<port> \
-  --workspace file://$HOME/oc-mirror-workspace \
-  --v2
-```
-
-### 2. Set up Intel attestation infrastructure
-
-See [`docs/intel-infrastructure.md`](docs/intel-infrastructure.md) for internet-connected side setup.
-
-See [`intel-tdx-remote-attestation-disconnected/DEPLOYMENT-GUIDE.md`](intel-tdx-remote-attestation-disconnected/DEPLOYMENT-GUIDE.md) for enclave-side PCCS deployment.
-
-### 3. Deploy operators via AutoShift
-
-In the AutoShift values, enable the CoCo profile:
-
-```yaml
-# autoshiftv2-coco/autoshift/values/clustersets/hub-baremetal-sno-coco.yaml
-hubClusterSets:
-  hub:
-    labels:
-      coco: 'true'                    # Top-level switch — enables all CoCo operators
-      sandboxed-containers: 'true'    # Sandboxed Containers Operator
-      trustee: 'true'                 # Trustee Operator (KBS)
-      node-feature-discovery: 'true'  # NFD for hardware detection
-      # ... subscription details auto-configured
-```
-
-### 4. Verify deployment
-
-```bash
-# Check operators are installed
-oc get csv -n openshift-sandboxed-containers-operator
-oc get csv -n trustee-operator-system
-oc get csv -n openshift-nfd
-
-# Check KataConfig is ready
-oc get kataconfig -A
-
-# Check Trustee KBS is running
-oc get pods -n trustee-operator-system
-
-# Verify TDX attestation
-oc logs deployment/trustee-deployment -n trustee-operator-system -c kbs --tail=20
-```
-
-## Deployment Order
-
-The operators must be deployed in a specific order due to dependencies:
-
-1. **NFD** — must detect TDX/SNP hardware before sandboxed containers can configure kata
-2. **Intel TDX MachineConfig** — enables TDX kernel modules (`kvm_intel.tdx=1`)
-3. **Sandboxed Containers Operator** — installs kata runtime, deploys KataConfig
-4. **Intel DCAP Operator** — deploys QGS for quote generation
-5. **Trustee Operator** — deploys KBS for attestation and secret delivery
-6. **Network config** — `routingViaHost: true` required for kata pod networking
-
-AutoShift handles this ordering through policy dependencies.
+- **kata-cc pods require >= 4Gi memory** — TDX VM uses 2048M; 256Mi causes OOM
+- **SgxDevicePlugin limits >= 10** — QGS DaemonSet needs 3 containers x SGX resources
+- **KBS ConfigMap is operator-managed** — do NOT edit directly; use KbsConfig CR
+- **Attestation keys must be EC P-256** — not RSA (ES256 required)
+- **Bare-metal reboots take 15-20 min** — wait the full duration after MachineConfig
+- **ACM policies revert manual edits** — changes go through `autoshiftv2-coco/` git repo
 
 ## FIPS Notes
 
-> **Assumption:** The target OpenShift cluster has FIPS mode enabled.
-
-The following areas may require attention with FIPS:
-
-- **Kata guest kernel**: The kata-cc guest VM uses its own kernel. Verify that the guest kernel and initrd shipped with OpenShift Sandboxed Containers 1.12 are FIPS-validated. Per Red Hat documentation, FIPS compliance for OpenShift sandboxed containers is in progress — check the [NIST CMVP status](https://csrc.nist.gov/projects/cryptographic-module-validation-program/validated-modules) for current validation state.
-- **Trustee (KBS) TLS**: The KBS endpoint should use FIPS-approved TLS cipher suites. The Red Hat build of Trustee runs on UBI which respects the host's crypto policies.
-- **Intel PCCS**: If running PCCS on the OpenShift cluster, its Node.js TLS stack is **not** FIPS-validated. Consider running PCCS on a separate RHEL host with FIPS-approved OpenSSL if FIPS compliance is required for all attestation traffic.
-- **dm-verity**: Image signature verification uses cosign/sigstore — verify that the signing algorithms used are FIPS-approved.
-
-## Additional Git Repos
-
-| Repo | Purpose | Location |
-|------|---------|----------|
-| [intel-tdx-remote-attestation-disconnected](intel-tdx-remote-attestation-disconnected/) | Containerized Intel PCCS, PCS Client Tool, and Admin Tool for disconnected TDX attestation | Subdirectory (also at github.com/dmc5179/intel-tdx-remote-attestation-disconnected) |
-| [autoshiftv2-coco](autoshiftv2-coco/) | Fork of AutoShift with CoCo operator policies added | Subdirectory |
-| [coco-pattern](coco-pattern/) | Upstream validated patterns reference (we do NOT use Ansible validated patterns — reference only) | Subdirectory |
-| [patterns-operator](patterns-operator/) | Patterns operator reference YAML (we do NOT use this — reference only) | Subdirectory |
-
-## Key Files Reference
-
-| File | What It Does |
-|------|-------------|
-| `nfd-nodefeaturerule-combined.yaml` | **Required** — NodeFeatureRule that detects kata runtime support, AMD SEV-SNP, Intel SGX, and Intel TDX hardware features |
-| `machine-config-intel-tdx.yaml` | MachineConfig that enables `kvm_intel.tdx=1` kernel arg and loads `vsock-loopback` module |
-| `kataconfig-cr.yaml` | KataConfig CR with `enablePeerPods: false` and `checkNodeEligibility: true` for bare metal |
-| `osc-feature-gates.yaml` | ConfigMap enabling confidential containers mode (`confidential: "true"`) |
+| Component | Status |
+|-----------|--------|
+| Kata guest kernel | FIPS validation in progress per Red Hat |
+| Trustee KBS (UBI-based) | Respects host crypto policies |
+| Intel PCCS (Node.js) | Not FIPS-validated — consider separate RHEL host |
+| Attestation keys | Must use FIPS-approved curves (P-256 or P-384) |

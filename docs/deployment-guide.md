@@ -185,10 +185,20 @@ fetch attestation collateral from Intel's PCS API.
 ```bash
 cd intel-tdx-remote-attestation-disconnected
 
-# Merge CSV files and fetch collateral
+# Step 1: Merge CSV files into platform_list.json
+./scripts/fetch-platform-collateral.sh collect /path/to/csv-dir/
+
+# Step 2: Fetch collateral from Intel PCS
+./scripts/fetch-platform-collateral.sh fetch --api-key YOUR_INTEL_PCS_API_KEY
+
+# Step 3 (on disconnected side): Insert into PCCS
+./scripts/fetch-platform-collateral.sh insert https://pccs-host:8081 \
+  --admin-token my-admin-token
+
+# Or all at once (single-server testing):
 ./scripts/fetch-platform-collateral.sh full ./csv-dir/ https://127.0.0.1:8081 \
   --api-key YOUR_INTEL_PCS_API_KEY \
-  --admin-token YOUR_PCCS_ADMIN_TOKEN
+  --admin-token my-admin-token
 ```
 
 ### Option B: Step by step
@@ -248,24 +258,33 @@ podman run -d --name pccs --network host \
   -v ./pccs-ssl-key:/opt/intel/sgx-dcap-pccs/ssl_key:Z \
   quay.io/danclark/intel-tdx/pccs:latest
 
-# Insert collateral
-podman run --rm -it \
-  -v ./platform_collaterals.json:/data/platform_collaterals.json:Z \
-  --network host \
-  -w /opt/app-root/src/confidential-computing.tee.dcap.pccs/PccsAdminTool \
-  quay.io/danclark/intel-tdx/pccs-admin-tool:latest \
-  python3 pccsadmin.py put --no-pccs-cert-check \
-    -u https://127.0.0.1:8081/sgx/certification/v4/platformcollateral \
-    -i /data/platform_collaterals.json
+# Insert collateral (default admin token: my-admin-token)
+./scripts/fetch-platform-collateral.sh insert https://127.0.0.1:8081 \
+  --admin-token my-admin-token
+
+# Verify
+curl -sk https://127.0.0.1:8081/sgx/certification/v4/rootcacrl | head -c 20
 ```
 
 ### Option B: Helm chart on OpenShift
 
 ```bash
 helm install pccs intel-tdx-remote-attestation-disconnected/chart/pccs/ \
-  --namespace pccs --create-namespace \
-  --set pccs.adminToken=<token> \
-  --set pccs.userToken=<token>
+  --namespace intel-pccs --create-namespace
+# Default tokens are baked into values.yaml:
+#   admin = my-admin-token (for inserting collateral)
+#   user  = my-user-token  (for QCNL client queries)
+```
+
+To use custom tokens, override at install time:
+
+```bash
+ADMIN_HASH=$(echo -n 'your-admin-token' | sha512sum | awk '{print $1}')
+USER_HASH=$(echo -n 'your-user-token' | sha512sum | awk '{print $1}')
+helm install pccs intel-tdx-remote-attestation-disconnected/chart/pccs/ \
+  --namespace intel-pccs --create-namespace \
+  --set pccs.adminTokenHash="$ADMIN_HASH" \
+  --set pccs.userTokenHash="$USER_HASH"
 ```
 
 See `intel-tdx-remote-attestation-disconnected/chart/pccs/README.md` for

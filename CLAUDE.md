@@ -180,5 +180,16 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
   Platform secrets: `052ee8ba6f37c01369058c914b2bfd09` (23KB cache),
   `40d0ab17d57614709b7d60174d7a7943`. Third secret `64dc40cfaa5f0ff4c714657ede203559`
   has "Missing platform_manifest field" (stale or incomplete).
+- KBS QCNL override: `kbs-qcnl-config` secret in `trustee-operator-system`
+  mounted at `/run/qcnl/` via `kbsLocalCertCacheSpec`. Env var
+  `QCNL_CONF_PATH=/run/qcnl/sgx_default_qcnl.conf` set via `KbsEnvVars`.
+  `pccs_url` points to on-cluster PCCS, `collateral_service` points to
+  Intel PCS directly (cluster has internet access). This enables KBS's
+  DCAP quote verification library to fetch collateral for TDX attestation.
+- CDH attestation trigger: CDH only contacts KBS when a workload requests
+  a sealed secret (not on pre-attestation). Plain kata-cc pods with
+  `cc_init_data` annotation configure CDH but don't trigger attestation.
+  Testing the full verification path requires a pod that fetches from
+  `kbs:///default/<repo>/<key>`.
 - EC2 PCCS host (`98.91.225.77`): unreachable as of 2026-09-06 (SSH and
   HTTPS both timeout). May need AWS security group fix or instance restart.

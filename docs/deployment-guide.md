@@ -296,9 +296,33 @@ different mechanism:
 5. QGS runs with `local_cache_only: true` (set via pod annotation),
    reading certificates exclusively from the local cache
 
-This means PCCS is **not required for QGS quote generation**. PCCS is
-only needed if you want a centralized cache for other consumers of DCAP
-collateral, or if you need to refresh collateral after TCB updates.
+This means PCCS is **not required for QGS quote generation**. However,
+PCCS is **required for KBS quote verification**. The KBS uses the Intel
+DCAP Quote Verification Library (`libsgx_dcap_quoteverify.so`) which
+needs PCCS to fetch PCK certificate chains, CRLs, and TCB info for
+validating the TDX quote signature and determining TCB status.
+
+The KBS pod's default QCNL config (`/etc/sgx_default_qcnl.conf`) also
+points to `localhost:8081`. You must configure it to reach your PCCS:
+
+```bash
+# Option 1: Mount a custom QCNL config via KbsConfig CR env vars
+# (The DCAP QPL respects the QCNL_CONF_PATH env var)
+oc patch kbsconfig kbsconfig -n trustee-operator-system --type=merge \
+  -p '{"spec":{"KbsEnvVars":{
+    "QCNL_CONF_PATH":"/run/qcnl/sgx_default_qcnl.conf"
+  }}}'
+
+# Option 2: Set the PCCS URL directly via env var (if supported)
+oc patch kbsconfig kbsconfig -n trustee-operator-system --type=merge \
+  -p '{"spec":{"KbsEnvVars":{
+    "SGX_AESM_ADDR":"pccs.intel-pccs.svc.cluster.local"
+  }}}'
+```
+
+Without PCCS collateral, the KBS attestation policy's `tcb_status` and
+`collateral_expiration_status` checks will fail, causing all attestation
+to be rejected.
 
 ### Network requirements
 

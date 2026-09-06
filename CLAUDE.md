@@ -110,6 +110,12 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
 - KBS secrets helper: `scripts/kbs-secrets.sh` manages KBS repository secrets
   (set/get/list/delete/register commands)
 - vsock-proxy DaemonSet: integrated into intel-tdx-dcap AutoShift policy
+- Platform collateral fetch: `fetch-platform-collateral.sh` collect + fetch
+  tested end-to-end. Pipes API key via stdin (PCS Client Tool uses getpass).
+- RFE: Trustee RVPS `local_json` limitation documented in
+  `docs/rfe-trustee-rvps-local-json.md`
+- CoCo attestation test workloads: `testbed/workloads/coco-attestation-test.yaml`
+  and `testbed/workloads/coco-sealed-httpd.yaml` with `generate-initdata.sh`
 
 ### Open Items
 - ~~NodeFeatureRule deployment~~ — DONE. Integrated into the NFD policy as
@@ -216,10 +222,10 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
 - Stale platform secret: `64dc40cfaa5f0ff4c714657ede203559` in `intel-dcap`
   namespace — deleted. Was missing `platform_manifest` field and had no `-pck`
   sibling. Likely from an incomplete or older collection process.
-- Platform collateral script: `collect` command tested with real CSV data
-  extracted from cluster platform secrets (2 platforms). `fetch` and `insert`
-  commands require Intel PCS API key and PCCS admin token respectively —
-  not available for automated testing.
+- Platform collateral script: `collect` and `fetch` commands tested with real
+  CSV data and Intel PCS API key. `fetch` pipes API key via stdin (PCS Client
+  Tool uses getpass, not env vars). 2 platforms, 468K of collateral fetched.
+  `insert` command requires PCCS admin token — plaintext unknown.
 - On-cluster PCCS (`intel-pccs`): no cached collateral (404). CachingFillMode
   is OFFLINE. Cannot populate without the admin token (SHA-512 hash stored in
   Helm values but plaintext unknown). For disconnected deployment, admin token

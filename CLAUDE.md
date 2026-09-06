@@ -129,9 +129,12 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
 - ~~QgsConfig CR~~ — DONE. Actual CRD is `trustedservices.intel.com/v1
   TdxQuoteGenerationService` (singleton name `intel-tdx-dcap`).
 - ~~SgxDevicePlugin CR~~ — DONE. Verified `deviceplugin.intel.com/v1`.
-- ~~End-to-end validation~~ — DONE. Test pod running in TDX VM with kata-cc
-  runtime class. CoCo policy enforcement confirmed (`oc exec` blocked).
-  QEMU uses `confidential-guest-support=tdx` with `OVMF.inteltdx.fd`.
+- ~~End-to-end validation~~ — DONE. Full TDX attestation verified:
+  DCAP quote check, MRCONFIGID check, EventLog integrity all passed.
+  Sealed secret retrieved from KBS via CDH after hardware attestation.
+  Test workloads: `testbed/workloads/coco-attestation-test.yaml` (pod),
+  `testbed/workloads/coco-sealed-httpd.yaml` (deployment+route).
+  Initdata generator: `scripts/generate-initdata.sh`.
 - `./sandboxed_containers/` cleanup — directory is now redundant with AutoShift
   policies but hasn't been removed yet.
 - `./trustee/` scripts — operational utilities (cert generation, RVPS updates)
@@ -139,10 +142,10 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
 - Intel TDX attestation infrastructure testing — CRL collateral fetched from
   Intel PCS and inserted into PCCS via REST API. PCCS serves CRL data. Full
   platform collateral flow requires real TDX hardware CSV files (collect ->
-  fetch -> insert). EC2 host: `ec2-98-91-225-77.compute-1.amazonaws.com`
-  (public: `98.91.225.77`).
+  fetch -> insert). EC2 host: `ec2-34-238-131-98.compute-1.amazonaws.com`
+  (public: `34.238.131.98`).
 - Firewall requirements for OpenShift -> PCCS connectivity:
-  - AWS Security Group: open TCP 8081 inbound from OCP egress IP `66.187.232.140`
+  - AWS Security Group: open TCP 8081 inbound from OCP egress CIDR `66.187.232.0/24`
   - Security Groups: `sg-0b0f6887b1df6f95f`, `sg-0e218d7cfa5323350`
   - PCCS must run with `--network host` (rootless podman only binds localhost)
 - SgxDevicePlugin: `enclaveLimit` and `provisionLimit` must be >= 10 for the
@@ -183,13 +186,23 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
 - KBS QCNL override: `kbs-qcnl-config` secret in `trustee-operator-system`
   mounted at `/run/qcnl/` via `kbsLocalCertCacheSpec`. Env var
   `QCNL_CONF_PATH=/run/qcnl/sgx_default_qcnl.conf` set via `KbsEnvVars`.
-  `pccs_url` points to on-cluster PCCS, `collateral_service` points to
-  Intel PCS directly (cluster has internet access). This enables KBS's
+  `pccs_url` points to EC2 PCCS (`ec2-34-238-131-98.compute-1.amazonaws.com:8081`),
+  `collateral_service` points to Intel PCS directly. This enables KBS's
   DCAP quote verification library to fetch collateral for TDX attestation.
 - CDH attestation trigger: CDH only contacts KBS when a workload requests
   a sealed secret (not on pre-attestation). Plain kata-cc pods with
   `cc_init_data` annotation configure CDH but don't trigger attestation.
   Testing the full verification path requires a pod that fetches from
   `kbs:///default/<repo>/<key>`.
-- EC2 PCCS host (`98.91.225.77`): unreachable as of 2026-09-06 (SSH and
-  HTTPS both timeout). May need AWS security group fix or instance restart.
+- EC2 PCCS host (`34.238.131.98`): reachable. Security group updated with
+  OCP egress CIDR `66.187.232.0/24` and RHEL server CIDR `98.118.249.0/24`.
+  Has cached root CA CRL collateral. KBS QCNL config updated to use this
+  PCCS for PCK cert lookups.
+- CoCo initdata: requires `io.katacontainers.config.hypervisor.cc_init_data`
+  annotation with gzipped+base64 encoded TOML. The `coco.io/initdata-configmap`
+  annotation requires Kyverno (not installed). Use `scripts/generate-initdata.sh`
+  to generate the annotation value.
+- EAR token RVPS warnings: KBS logs "No reference value found for id: rtmr_1"
+  during EAR token generation. These are from `ear_token::broker`, not from
+  attestation verification. Attestation itself passes. The RVPS values are
+  stored correctly but the EAR token Rego policy uses a different lookup path.

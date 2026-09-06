@@ -1,0 +1,134 @@
+# CoCo Sealed Secret HTTPD Deployment
+#
+# Deployment that serves a KBS sealed secret via an OpenShift route.
+# Demonstrates production-like CoCo workload with:
+#   - init container fetching sealed secret via CDH/KBS attestation
+#   - httpd serving the decrypted secret
+#   - TLS-terminated route for external access
+#   - Secure policy (oc exec blocked)
+#
+# Prerequisites:
+#   - KBS secret exists: ./scripts/kbs-secrets.sh set attestation-test test-value 'your-secret'
+#
+# Usage:
+#   INITDATA=$(./scripts/generate-initdata.sh secure)
+#   sed "s|REPLACE_WITH_INITDATA|$INITDATA|" testbed/workloads/coco-sealed-httpd.yaml | oc apply -f -
+#
+#   # Get the route URL
+#   oc get route coco-sealed-httpd -n coco-test
+#   curl -sk https://coco-sealed-httpd-coco-test.apps.<cluster>/secret.txt
+#
+#   # Cleanup
+#   oc delete namespace coco-test
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: coco-test
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coco-sealed-httpd
+  namespace: coco-test
+  labels:
+    app: coco-sealed-httpd
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: coco-sealed-httpd
+  template:
+    metadata:
+      labels:
+        app: coco-sealed-httpd
+      annotations:
+        io.katacontainers.config.hypervisor.default_memory: "4096"
+        io.containerd.cri.runtime-handler: kata-cc
+        io.katacontainers.config.runtime.create_container_timeout: "600"
+        io.katacontainers.config.hypervisor.cc_init_data: "REPLACE_WITH_INITDATA"
+    spec:
+      runtimeClassName: kata-cc
+      initContainers:
+      - name: fetch-secret
+        image: registry.access.redhat.com/ubi9/ubi:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          echo "Fetching sealed secret from KBS via CDH..."
+          RESULT=$(curl -sf --retry 5 --retry-delay 3 --retry-connrefused \
+            http://127.0.0.1:8006/cdh/resource/default/attestation-test/test-value 2>&1)
+          RC=$?
+          if [ $RC -eq 0 ]; then
+            echo "SUCCESS: attestation completed"
+            cat <<HTML > /var/www/html/index.html
+            <!DOCTYPE html>
+            <html><body>
+            <h1>CoCo Attestation: PASS</h1>
+            <p>This page is served from inside a TDX confidential VM.</p>
+            <p>The secret was retrieved from KBS after hardware attestation.</p>
+            </body></html>
+            HTML
+            echo "$RESULT" > /var/www/html/secret.txt
+          else
+            echo "FAILED (exit $RC): $RESULT"
+            echo "<html><body><h1>CoCo Attestation: FAIL</h1></body></html>" > /var/www/html/index.html
+            echo "ATTESTATION_FAILED" > /var/www/html/secret.txt
+          fi
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: webroot
+          mountPath: /var/www/html
+      containers:
+      - name: httpd
+        image: registry.redhat.io/ubi9/httpd-24@sha256:68a91ff691092f455fea682330c499588747231c16516cd4f35aff821e6847f2
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        volumeMounts:
+        - name: webroot
+          mountPath: /var/www/html
+          readOnly: true
+        resources:
+          requests:
+            memory: "4Gi"
+          limits:
+            memory: "4Gi"
+      volumes:
+      - name: webroot
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: coco-sealed-httpd
+  namespace: coco-test
+  labels:
+    app: coco-sealed-httpd
+spec:
+  selector:
+    app: coco-sealed-httpd
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: coco-sealed-httpd
+  namespace: coco-test
+  labels:
+    app: coco-sealed-httpd
+spec:
+  to:
+    kind: Service
+    name: coco-sealed-httpd
+  port:
+    targetPort: 8080
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

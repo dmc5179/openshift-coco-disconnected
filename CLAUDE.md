@@ -166,3 +166,12 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
   policy as `vsock-proxy` manifest group. Uses host's `/usr/bin/socat` mounted
   into UBI9 container (disconnected-safe, no dnf install needed). Tested:
   full attestation flow works with DaemonSet proxy.
+- PCCS on cluster (`intel-pccs` namespace): NodePort 30081, ClusterIP
+  172.30.144.185:8081. Currently has NO cached collateral (404 on rootcacrl).
+  Needs platform collateral inserted via `fetch-platform-collateral.sh`.
+- QGS QCNL config: default `localhost:8081` — unreachable from QGS pod
+  (pod networking, not hostNetwork). Needs reconfiguration to point to
+  `pccs.intel-pccs.svc.cluster.local:8081` with `use_secure_cert: false`.
+  Operator may override this via TdxQuoteGenerationService CR.
+- EC2 PCCS host (`98.91.225.77`): unreachable as of 2026-09-06 (SSH and
+  HTTPS both timeout). May need AWS security group fix or instance restart.

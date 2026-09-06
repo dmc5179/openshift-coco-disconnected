@@ -279,6 +279,57 @@ curl -sk https://<PCCS_HOST>:8081/sgx/certification/v4/rootcacrl
 
 A non-empty response (hex-encoded CRL data) confirms collateral is loaded.
 
+### Configure QGS to reach PCCS
+
+The Intel TDX DCAP operator's QGS DaemonSet has a default QCNL config that
+points to `localhost:8081`. If PCCS is running in a separate pod or on a
+different host, QGS cannot reach it with this default.
+
+**If PCCS runs on the cluster** (Helm chart in `intel-pccs` namespace):
+
+The QGS pods use pod networking, not hostNetwork. The PCCS service is at
+`pccs.intel-pccs.svc.cluster.local:8081` but QGS's QCNL config points to
+`localhost:8081`. You need to override the QCNL config.
+
+Create a ConfigMap with the corrected QCNL:
+
+```bash
+cat <<'EOF' | oc apply -n intel-dcap -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: qcnl-config
+  namespace: intel-dcap
+data:
+  sgx_default_qcnl.conf: |
+    {
+      "pccs_url": "https://pccs.intel-pccs.svc.cluster.local:8081/sgx/certification/v4/",
+      "use_secure_cert": false,
+      "retry_times": 6,
+      "retry_delay": 10,
+      "pck_cache_expire_hours": 168,
+      "verify_collateral_cache_expire_hours": 168,
+      "local_cache_only": false
+    }
+EOF
+```
+
+Then patch the QGS DaemonSet to mount it (note: the DCAP operator may revert
+this change on reconcile — you may need to scale the operator to 0 first):
+
+```bash
+oc patch daemonset intel-tdx-dcap-qgs -n intel-dcap --type=json -p '[
+  {"op":"add","path":"/spec/template/spec/volumes/-",
+   "value":{"name":"qcnl-config","configMap":{"name":"qcnl-config"}}},
+  {"op":"add","path":"/spec/template/spec/containers/0/volumeMounts/-",
+   "value":{"name":"qcnl-config","mountPath":"/etc/sgx_default_qcnl.conf",
+            "subPath":"sgx_default_qcnl.conf"}}
+]'
+```
+
+**If PCCS runs on a separate RHEL host**: Use the PCCS host's IP and port
+8081 in the QCNL config above instead of the Kubernetes service URL.
+
 ### Network requirements
 
 All OpenShift nodes running TDX workloads must be able to reach the PCCS on

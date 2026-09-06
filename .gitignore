@@ -2,4 +2,21 @@ sgx_linux_x64_sdk_2.29.100.1.bin
 tpm2-tools-5.2-7.el9.x86_64.rpm
 autoshiftv2-coco/
 coco-pattern/
+coco-pattern-mine/
 intel-tdx-remote-attestation-disconnected/
+redfish-configure-tdx-bios/
+patterns-operator/
+
+# Sensitive testbed files (credentials, keys, installer state)
+testbed/install-config.yaml
+testbed/kbs-auth-private.pem
+testbed/test-server-notes.txt
+testbed/cluster/
+
+# Ephemeral
+prompt.txt
+*.pem
+*.iso
+
+# Redundant with AutoShift policies
+sandboxed_containers/

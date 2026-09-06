@@ -89,33 +89,80 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
 - Top-level `README.md` with architecture and deployment order
 - `docs/mirroring.md` — disconnected mirroring guide
 - `docs/intel-infrastructure.md` — internet-connected side Intel setup
-- AutoShift policy: sandboxed-containers (operator-install + coco-config)
-- AutoShift policy: trustee (operator-install + KbsConfig + ConfigMap)
+- AutoShift policy: sandboxed-containers (operator-install + tdx-machine-config + coco-config)
+- AutoShift policy: trustee (operator-install + KbsConfig + ConfigMap, v0.1.0 schema)
 - AutoShift policy: intel-device-plugins (operator-install + SgxDevicePlugin)
-- AutoShift policy: intel-tdx-dcap (operator-install + QgsConfig)
+- AutoShift policy: intel-tdx-dcap (operator-install + TdxQuoteGenerationService)
 - CoCo clusterset values: `hub-baremetal-sno-coco.yaml`
 - `_example.yaml` updated with CoCo labels
 - `intel-tdx-remote-attestation-disconnected/` docs updated (FIPS, CoreOS)
+- Pre-flight scripts: `scripts/preflight-cluster.sh`, `scripts/preflight-rhel9.sh`
+- End-to-end test plan: `docs/test-plan.md`
+- AutoShift NFD policy: added CoCo NodeFeatureRule (TDX, SNP, SGX, kata detection)
+- PCCS Helm chart: `intel-tdx-remote-attestation-disconnected/chart/pccs/`
+- KBS config verified against Trustee v0.1.0 schema (5 iterations)
+- E2E CoCo validation: test pod running in TDX VM with CoCo policy enforcement
+- QgsConfig CR verified: `trustedservices.intel.com/v1 TdxQuoteGenerationService`
+- SgxDevicePlugin CR verified: `deviceplugin.intel.com/v1`
+- RVPS reference values: `scripts/generate-rvps-reference-values.sh` generates
+  TDX measurements via veritas tool. Applied to cluster via KbsConfig CR
+  `kbsRvpsRefValuesConfigMapName` field.
+- KBS secrets helper: `scripts/kbs-secrets.sh` manages KBS repository secrets
+  (set/get/list/delete/register commands)
+- vsock-proxy DaemonSet: integrated into intel-tdx-dcap AutoShift policy
 
 ### Open Items
-- NodeFeatureRule deployment — not yet in an AutoShift policy; currently a
-  standalone YAML (`nfd-nodefeaturerule-combined.yaml`). May belong in the
-  NFD policy or a new coco-infrastructure policy.
-- MachineConfig for TDX kernel args — same situation as NodeFeatureRule.
-  Needs a policy or integration into sandboxed-containers policy.
-- Trustee post-deployment automation — auth key pair, RVPS reference values,
-  and KBS repository secrets are manual steps. Scripts exist in `./trustee/`
-  but aren't integrated into AutoShift.
-- PCCS deployment on OpenShift — `intel-tdx-remote-attestation-disconnected/`
-  has the guide, but no AutoShift policy for it (PCCS is not an OLM operator).
-- QgsConfig CR — the `intel-tdx-dcap-operator` is in alpha channel; the CR
-  API (`confidentialcontainers.intel.com/v1alpha1`) needs verification against
-  the actual installed CRD.
-- SgxDevicePlugin CR — needs verification of the API version and spec schema
-  against the installed operator.
-- End-to-end validation — none of the AutoShift policies have been tested on
-  a live cluster yet.
+- ~~NodeFeatureRule deployment~~ — DONE. Integrated into the NFD policy as
+  `coco-nodefeaturerule` manifest group (detects TDX, SNP, SGX, kata hardware).
+- ~~MachineConfig for TDX kernel args~~ — DONE. Integrated into
+  sandboxed-containers policy as `tdx-machine-config` manifest group.
+- ~~Trustee token signing/verification~~ — DONE. KBS TOML requires
+  `[attestation_service.attestation_token_broker.signer]` with `key_path` and
+  `cert_path` pointing to the mounted EC (P-256) key/cert. Operator v1.2.1
+  doesn't generate this section automatically — fixed in AutoShift policy
+  `trustee-config/kbs-config-cm.yaml`. Attestation key must be EC, not RSA.
+- Trustee post-deployment automation — RVPS reference values automated via
+  `scripts/generate-rvps-reference-values.sh`. KBS secrets managed via
+  `scripts/kbs-secrets.sh`. Both applied to cluster and verified.
+- ~~PCCS deployment on OpenShift~~ — DONE. Helm chart at
+  `intel-tdx-remote-attestation-disconnected/chart/pccs/`.
+- ~~QgsConfig CR~~ — DONE. Actual CRD is `trustedservices.intel.com/v1
+  TdxQuoteGenerationService` (singleton name `intel-tdx-dcap`).
+- ~~SgxDevicePlugin CR~~ — DONE. Verified `deviceplugin.intel.com/v1`.
+- ~~End-to-end validation~~ — DONE. Test pod running in TDX VM with kata-cc
+  runtime class. CoCo policy enforcement confirmed (`oc exec` blocked).
+  QEMU uses `confidential-guest-support=tdx` with `OVMF.inteltdx.fd`.
 - `./sandboxed_containers/` cleanup — directory is now redundant with AutoShift
   policies but hasn't been removed yet.
 - `./trustee/` scripts — operational utilities (cert generation, RVPS updates)
   still live here. Not redundant, but need a better home or documentation.
+- Intel TDX attestation infrastructure testing — CRL collateral fetched from
+  Intel PCS and inserted into PCCS via REST API. PCCS serves CRL data. Full
+  platform collateral flow requires real TDX hardware CSV files (collect ->
+  fetch -> insert). EC2 host: `ec2-98-91-225-77.compute-1.amazonaws.com`
+  (public: `98.91.225.77`).
+- Firewall requirements for OpenShift -> PCCS connectivity:
+  - AWS Security Group: open TCP 8081 inbound from OCP egress IP `66.187.232.140`
+  - Security Groups: `sg-0b0f6887b1df6f95f`, `sg-0e218d7cfa5323350`
+  - PCCS must run with `--network host` (rootless podman only binds localhost)
+- SgxDevicePlugin: `enclaveLimit` and `provisionLimit` must be >= 10 for the
+  QGS DaemonSet to schedule (it has 3 containers each requesting SGX resources).
+- Intel TDX DCAP: QGS service account needs `privileged` SCC (hostPath volumes,
+  runAsUser: 0, spc_t SELinux type).
+- Kata-cc pods: require >= 4Gi memory (TDX VM uses 2048M; 256Mi causes OOM kill).
+- KBS config: operator controls ConfigMap via reconcile loop — do NOT edit
+  ConfigMap directly; changes are reverted. Use KbsConfig CR fields instead.
+- KBS `dir_path` migration bug: operator v1.2 migration from v1.1 sets wrong
+  storage path. Deleting and recreating KbsConfig CR generates correct v1.2 TOML.
+- KBS attestation secrets (`kbs-attestation-key`, `kbs-attestation-cert`) contain
+  EC P-256 key/cert generated 2026-09-05. These are cluster-only — not in git.
+  If deleted, regenerate: `openssl ecparam -name prime256v1 -genkey -noout`,
+  then self-signed cert. Must be EC (ES256), not RSA.
+- ACM ConfigurationPolicy enforcement: `kbs-config-cm` ConfigMap is managed by
+  `policy-trustee-config` in `local-cluster` namespace. Manual edits revert
+  within seconds. Changes must go through `autoshiftv2-coco/` git repo.
+- `qgs-vsock-proxy` DaemonSet in `intel-dcap` namespace — socat bridge from
+  vsock port 4050 to QGS Unix socket. Integrated into intel-tdx-dcap AutoShift
+  policy as `vsock-proxy` manifest group. Uses host's `/usr/bin/socat` mounted
+  into UBI9 container (disconnected-safe, no dnf install needed). Tested:
+  full attestation flow works with DaemonSet proxy.

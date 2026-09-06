@@ -167,11 +167,18 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
   into UBI9 container (disconnected-safe, no dnf install needed). Tested:
   full attestation flow works with DaemonSet proxy.
 - PCCS on cluster (`intel-pccs` namespace): NodePort 30081, ClusterIP
-  172.30.144.185:8081. Currently has NO cached collateral (404 on rootcacrl).
-  Needs platform collateral inserted via `fetch-platform-collateral.sh`.
-- QGS QCNL config: default `localhost:8081` — unreachable from QGS pod
-  (pod networking, not hostNetwork). Needs reconfiguration to point to
-  `pccs.intel-pccs.svc.cluster.local:8081` with `use_secure_cert: false`.
-  Operator may override this via TdxQuoteGenerationService CR.
+  172.30.144.185:8081. Has no cached collateral (404 on rootcacrl) — but
+  this is not blocking QGS because the operator uses a different mechanism.
+- QGS QCNL config: operator overrides via pod annotation `qcnl-conf` with
+  `{"local_cache_only": true}`. QGS reads PCK certs from `/run/dcap/cache/`
+  populated by the `pck-cert-tool` sidecar. The default `/etc/sgx_default_qcnl.conf`
+  (localhost:8081) is NOT used. PCK cert secrets (`-pck` suffixed) are created
+  by the registrar after fetching from Intel PCS.
+- DCAP operator PCK cert flow: initContainer collects platform manifest →
+  creates K8s secret → registrar watches for platform secrets → fetches PCK
+  certs from Intel PCS → creates `-pck` secret → sidecar writes to cache.
+  Platform secrets: `052ee8ba6f37c01369058c914b2bfd09` (23KB cache),
+  `40d0ab17d57614709b7d60174d7a7943`. Third secret `64dc40cfaa5f0ff4c714657ede203559`
+  has "Missing platform_manifest field" (stale or incomplete).
 - EC2 PCCS host (`98.91.225.77`): unreachable as of 2026-09-06 (SSH and
   HTTPS both timeout). May need AWS security group fix or instance restart.

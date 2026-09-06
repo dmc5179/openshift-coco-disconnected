@@ -110,12 +110,19 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
 - KBS secrets helper: `scripts/kbs-secrets.sh` manages KBS repository secrets
   (set/get/list/delete/register commands)
 - vsock-proxy DaemonSet: integrated into intel-tdx-dcap AutoShift policy
-- Platform collateral fetch: `fetch-platform-collateral.sh` collect + fetch
-  tested end-to-end. Pipes API key via stdin (PCS Client Tool uses getpass).
+- Platform collateral fetch: `fetch-platform-collateral.sh` collect + fetch +
+  insert tested end-to-end. Pipes API key via stdin (PCS Client Tool uses
+  getpass). Default admin/user tokens set in Helm chart values.
 - RFE: Trustee RVPS `local_json` limitation documented in
   `docs/rfe-trustee-rvps-local-json.md`
+- RFE: Trustee KBS `dir_path` migration bug documented in
+  `docs/rfe-trustee-kbs-dirpath-migration.md`
 - CoCo attestation test workloads: `testbed/workloads/coco-attestation-test.yaml`
   and `testbed/workloads/coco-sealed-httpd.yaml` with `generate-initdata.sh`
+- Multiple sealed secrets: 3 secrets in one pod, all fetched after single
+  attestation. Attestation session reused across fetches.
+- Comprehensive documentation restructured: README.md is the top-level getting
+  started guide with phased references to all sub-docs.
 
 ### Open Items
 - ~~NodeFeatureRule deployment~~ — DONE. Integrated into the NFD policy as
@@ -141,15 +148,12 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
   Test workloads: `testbed/workloads/coco-attestation-test.yaml` (pod),
   `testbed/workloads/coco-sealed-httpd.yaml` (deployment+route).
   Initdata generator: `scripts/generate-initdata.sh`.
-- `./sandboxed_containers/` cleanup — directory is now redundant with AutoShift
-  policies but hasn't been removed yet.
-- `./trustee/` scripts — operational utilities (cert generation, RVPS updates)
-  still live here. Not redundant, but need a better home or documentation.
-- Intel TDX attestation infrastructure testing — CRL collateral fetched from
-  Intel PCS and inserted into PCCS via REST API. PCCS serves CRL data. Full
-  platform collateral flow requires real TDX hardware CSV files (collect ->
-  fetch -> insert). EC2 host: `ec2-34-238-131-98.compute-1.amazonaws.com`
-  (public: `34.238.131.98`).
+- `./sandboxed_containers/` — redundant with AutoShift policies, in `.gitignore`.
+- `./trustee/` scripts — operational utilities (cert generation, RVPS updates).
+  Documented in `docs/trustee-operations.md`.
+- Intel TDX attestation infrastructure: full collateral pipeline tested
+  (collect → fetch → insert). EC2 host:
+  `ec2-34-238-131-98.compute-1.amazonaws.com` (public: `34.238.131.98`).
 - Firewall requirements for OpenShift -> PCCS connectivity:
   - AWS Security Group: open TCP 8081 inbound from OCP egress CIDR `66.187.232.0/24`
   - Security Groups: `sg-0b0f6887b1df6f95f`, `sg-0e218d7cfa5323350`
@@ -219,14 +223,21 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
   ConfigMap. This is an operator limitation — RVPS reference value matching
   does not work in AllInOne mode. Attestation still passes via DCAP quote
   verification (signature, TCB, collateral checks) without RVPS.
-- Stale platform secret: `64dc40cfaa5f0ff4c714657ede203559` in `intel-dcap`
-  namespace — deleted. Was missing `platform_manifest` field and had no `-pck`
-  sibling. Likely from an incomplete or older collection process.
-- Platform collateral script: `collect` and `fetch` commands tested with real
-  CSV data and Intel PCS API key. `fetch` pipes API key via stdin (PCS Client
-  Tool uses getpass, not env vars). 2 platforms, 468K of collateral fetched.
-  `insert` command requires PCCS admin token — plaintext unknown.
+- ~~Stale platform secret~~ — DONE. `64dc40cfaa5f0ff4c714657ede203559` in
+  `intel-dcap` namespace deleted. Was missing `platform_manifest` field.
+- Platform collateral script: full pipeline tested end-to-end (collect → fetch
+  → insert). 2 platforms, 468K of collateral fetched from Intel PCS and
+  inserted into EC2 PCCS. Default tokens: admin=`my-admin-token`,
+  user=`my-user-token` (hashes in Helm chart `values.yaml`).
 - On-cluster PCCS (`intel-pccs`): no cached collateral (404). CachingFillMode
-  is OFFLINE. Cannot populate without the admin token (SHA-512 hash stored in
-  Helm values but plaintext unknown). For disconnected deployment, admin token
-  must be known at install time and passed to `fetch-platform-collateral.sh insert`.
+  is OFFLINE. Helm chart now has default tokens (admin=`my-admin-token`,
+  user=`my-user-token`). Redeploy with defaults, then run
+  `fetch-platform-collateral.sh insert` to populate.
+- PVCs with kata-cc: PVCs mount as tmpfs inside the TDX VM, not the actual
+  block device. Data does not persist between pods. Kata-cc doesn't enable
+  virtio-blk passthrough for block-backed PVCs. This is a CoCo/kata limitation,
+  not an operator bug.
+- OPA attestation policy customization: `kbsAttestationPolicyConfigMapName`
+  triggers the v1.2 migration logic which deletes the user's ConfigMap and
+  fails to recreate it. Custom attestation policies blocked in AllInOne mode.
+  RFE documented in `docs/rfe-trustee-attestation-policy-configmap.md`.

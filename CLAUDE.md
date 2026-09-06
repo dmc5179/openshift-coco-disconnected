@@ -202,7 +202,25 @@ CoCo clusterset profile: `autoshift/values/clustersets/hub-baremetal-sno-coco.ya
   annotation with gzipped+base64 encoded TOML. The `coco.io/initdata-configmap`
   annotation requires Kyverno (not installed). Use `scripts/generate-initdata.sh`
   to generate the annotation value.
-- EAR token RVPS warnings: KBS logs "No reference value found for id: rtmr_1"
-  during EAR token generation. These are from `ear_token::broker`, not from
-  attestation verification. Attestation itself passes. The RVPS values are
-  stored correctly but the EAR token Rego policy uses a different lookup path.
+- RVPS `local_json` not configured: Trustee operator v1.2.1 sets
+  `[attestation_service.rvps_config] type = "BuiltIn"` but omits `local_json`
+  path, so RVPS uses an empty in-memory store. The operator mounts the
+  `kbsRvpsRefValuesConfigMapName` ConfigMap at the correct path
+  (`/opt/confidential-containers/storage/local_json/reference_value`) but
+  doesn't tell RVPS to read it. The `kbsRvpsConfigMapName` and
+  `kbsAsConfigMapName` fields only work with MicroservicesDeployment. The
+  operator reconcile loop overwrites any manual edits to the KBS config
+  ConfigMap. This is an operator limitation — RVPS reference value matching
+  does not work in AllInOne mode. Attestation still passes via DCAP quote
+  verification (signature, TCB, collateral checks) without RVPS.
+- Stale platform secret: `64dc40cfaa5f0ff4c714657ede203559` in `intel-dcap`
+  namespace — deleted. Was missing `platform_manifest` field and had no `-pck`
+  sibling. Likely from an incomplete or older collection process.
+- Platform collateral script: `collect` command tested with real CSV data
+  extracted from cluster platform secrets (2 platforms). `fetch` and `insert`
+  commands require Intel PCS API key and PCCS admin token respectively —
+  not available for automated testing.
+- On-cluster PCCS (`intel-pccs`): no cached collateral (404). CachingFillMode
+  is OFFLINE. Cannot populate without the admin token (SHA-512 hash stored in
+  Helm values but plaintext unknown). For disconnected deployment, admin token
+  must be known at install time and passed to `fetch-platform-collateral.sh insert`.

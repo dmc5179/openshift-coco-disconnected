@@ -1,0 +1,41 @@
+apiVersion: v1alpha1
+kind: AgentConfig
+metadata:
+  name: agent-config 
+additionalNTPSources:
+  - 2.rhel.pool.ntp.org
+rendezvousIP: 10.6.68.48  # For a SNO cluster this is the same IP as the server. 
+hosts:
+  - hostname: virtlab2407.virt.eng.rdu2.dc.redhat.com
+    role: master
+    interfaces:
+      - name: eno1  # This doesn't need to be the actual interface name, it has to match the names below
+        macAddress: c4:cb:e1:c3:e2:ae
+    rootDeviceHints:
+      deviceName: /dev/disk/by-path/pci-0000:9b:00.0-scsi-0:3:111:0 # Change this to the drive that OCP should install the OS on
+    networkConfig:
+      interfaces:
+        - name: eno1  # This doesn't need to be the actual interface name, it has to match the name above
+          type: ethernet
+          state: up
+          mac-address: c4:cb:e1:c3:e2:ae # This should match the mac addresse from above
+          mtu: 1500    # Only set this if Jumbo frames are requried otherwise delete entry
+          ipv4:
+            enabled: true
+            address:
+              - ip: 10.6.68.48
+                prefix-length: 24
+            dhcp: false
+          ipv6:
+            enabled: false
+      dns-resolver:
+        config:
+          server:
+            - 10.11.5.160
+            - 10.2.32.85
+      routes:
+        config:
+          - destination: 0.0.0.0/0
+            next-hop-address: 10.6.68.254   # Default route for node network
+            next-hop-interface: eno1  # This doesn't need to be the actual interface name, it has to match the name above
+            table-id: 254
